@@ -86,9 +86,9 @@ def edge_case_node(state: ReviewState) -> ReviewState:
         logger.error("[Node 4] Edge-case generation failed: %s", exc)
         # Provide a minimal fallback set so the pipeline doesn't stall
         tests = [
-            {"description": "empty list",  "input": [],    "expected": None},
-            {"description": "single item", "input": [1],   "expected": None},
-            {"description": "two items",   "input": [1,2], "expected": None},
+            {"description": "empty list",  "input": [],    "expected": []},
+            {"description": "single item", "input": [1],   "expected": [1]},
+            {"description": "two items",   "input": [2, 1], "expected": [1, 2]},
         ]
 
     return {

@@ -28,7 +28,7 @@ settings = get_settings()
 # ── Test script template ──────────────────────────────────────────────────────
 
 _HARNESS_TEMPLATE = '''
-import json, sys, traceback, time
+import json, sys, traceback, time, inspect
 
 # ───── User code ─────
 {user_code}
@@ -37,13 +37,19 @@ import json, sys, traceback, time
 tests = {tests_json}
 results = []
 
+try:
+    sig = inspect.signature(solution)
+    param_count = len(sig.parameters)
+except Exception:
+    param_count = 1
+
 for t in tests:
     test_input  = t.get("input")
     expected    = t.get("expected")
     description = t.get("description", "")
     start = time.perf_counter()
     try:
-        if isinstance(test_input, list):
+        if isinstance(test_input, list) and param_count != 1:
             actual = solution(*test_input)
         elif isinstance(test_input, dict):
             actual = solution(**test_input)
@@ -166,6 +172,13 @@ def _fallback_run(
             error="No top-level `solution` function found in submitted code."
         )
 
+    import inspect
+    try:
+        sig = inspect.signature(solution_fn)
+        param_count = len(sig.parameters)
+    except Exception:
+        param_count = 1
+
     raw_results: List[Dict[str, Any]] = []
     for t in tests:
         inp      = t.get("input")
@@ -173,7 +186,12 @@ def _fallback_run(
         desc     = t.get("description", "")
         t0 = time.perf_counter()
         try:
-            actual  = solution_fn(*inp) if isinstance(inp, list) else solution_fn(inp)
+            if isinstance(inp, list) and param_count != 1:
+                actual = solution_fn(*inp)
+            elif isinstance(inp, dict):
+                actual = solution_fn(**inp)
+            else:
+                actual = solution_fn(inp)
             elapsed = time.perf_counter() - t0
             passed  = actual == expected
             raw_results.append({

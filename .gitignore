@@ -1,0 +1,44 @@
+# =========================
+# Python & Virtual Environments
+# =========================
+.venv/
+venv/
+.env/
+__pycache__/
+*.py[cod]
+*$py.class
+
+# =========================
+# Environment Variables & Secrets
+# =========================
+.env
+.env.*
+*.secret
+
+# =========================
+# Mac OS
+# =========================
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# =========================
+# IDEs and Editors
+# =========================
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# =========================
+# Build / Distribution / Testing
+# =========================
+build/
+dist/
+*.egg-info/
+*.egg
+.pytest_cache/
+.coverage
+htmlcov/
+node_modules/
+frontend/.next/

@@ -1,14 +1,8 @@
 """
 POST /api/v1/review – Server-Sent Events (SSE) endpoint
 
-Streams LangGraph node progress events back to the frontend in real-time.
-Each event is a JSON payload describing the current pipeline status.
-
-Event types:
-  { "event": "status",   "data": { "status": "...", "node": "..." } }
-  { "event": "progress", "data": { "time_complexity": "...", ... } }
-  { "event": "result",   "data": { <full final state> } }
-  { "event": "error",    "data": { "message": "..." } }
+Streams LangGraph node progress events back to the frontend in real-time
+using FastAPI's native StreamingResponse (no third-party SSE libs required).
 """
 
 from __future__ import annotations
@@ -19,8 +13,8 @@ import logging
 from typing import AsyncGenerator
 
 from fastapi import APIRouter
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
-from sse_starlette.sse import EventSourceResponse
 
 from backend.agents.graph import compiled_graph
 from backend.core.state import ReviewState
@@ -38,8 +32,13 @@ class ReviewRequest(BaseModel):
 
 # ── SSE helpers ───────────────────────────────────────────────────────────────
 
-def _sse_event(event_type: str, payload: dict) -> dict:
-    return {"event": event_type, "data": json.dumps(payload)}
+def _sse_event(event_type: str, payload: dict) -> str:
+    """
+    Formats the payload into the strict SSE text specification.
+    Must include newlines and double newlines at the end.
+    """
+    data_str = json.dumps(payload)
+    return f"event: {event_type}\ndata: {data_str}\n\n"
 
 
 _NODE_LABELS: dict[str, str] = {
@@ -52,10 +51,9 @@ _NODE_LABELS: dict[str, str] = {
 }
 
 
-async def _stream_graph(request: ReviewRequest) -> AsyncGenerator[dict, None]:
+async def _stream_graph(request: ReviewRequest) -> AsyncGenerator[str, None]:
     """
-    Run the LangGraph pipeline in a thread pool and yield SSE events.
-    LangGraph's .stream() is synchronous, so we push it off the event-loop.
+    Run the LangGraph pipeline in a thread pool and yield SSE text chunks.
     """
     initial_state: ReviewState = {
         "problem_description": request.problem_description,
@@ -73,10 +71,9 @@ async def _stream_graph(request: ReviewRequest) -> AsyncGenerator[dict, None]:
     }
 
     loop = asyncio.get_event_loop()
-    queue: asyncio.Queue[dict | None] = asyncio.Queue()
+    queue: asyncio.Queue[str | None] = asyncio.Queue()
 
     def run_graph() -> None:
-        """Runs in a thread pool; puts events into the async queue."""
         try:
             for step in compiled_graph.stream(initial_state, stream_mode="updates"):
                 for node_name, node_state in step.items():
@@ -108,8 +105,6 @@ async def _stream_graph(request: ReviewRequest) -> AsyncGenerator[dict, None]:
                         _sse_event("status", payload),
                     )
 
-            # Graph finished – emit final result
-            # Re-run once to get full final state (stream_mode="values" gives final)
             final = compiled_graph.invoke(initial_state)
             loop.call_soon_threadsafe(
                 queue.put_nowait,
@@ -135,15 +130,13 @@ async def _stream_graph(request: ReviewRequest) -> AsyncGenerator[dict, None]:
         finally:
             loop.call_soon_threadsafe(queue.put_nowait, None)
 
-    # Run blocking graph in thread pool
     asyncio.get_event_loop().run_in_executor(None, run_graph)
 
-    # Drain the queue and yield events
     while True:
-        event = await queue.get()
-        if event is None:
+        event_str = await queue.get()
+        if event_str is None:
             break
-        yield event
+        yield event_str
 
 
 # ── Route ─────────────────────────────────────────────────────────────────────
@@ -151,10 +144,9 @@ async def _stream_graph(request: ReviewRequest) -> AsyncGenerator[dict, None]:
 @router.post("/review")
 async def review_code(request: ReviewRequest):
     """
-    Stream review pipeline progress as Server-Sent Events.
-    Connect with `EventSource` on the frontend.
+    Stream review pipeline progress natively using FastAPI StreamingResponse.
     """
-    return EventSourceResponse(
+    return StreamingResponse(
         _stream_graph(request),
         media_type="text/event-stream",
     )
