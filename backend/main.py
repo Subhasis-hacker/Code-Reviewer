@@ -11,6 +11,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from backend.api.routes import router
+from backend.api.cp_routes import router as cp_router
 from backend.core.config import get_settings
 
 logging.basicConfig(
@@ -38,7 +39,8 @@ app.add_middleware(
 )
 
 # ── Routers ───────────────────────────────────────────────────────────────────
-app.include_router(router, prefix="/api/v1")
+app.include_router(router,    prefix="/api/v1")              # existing review pipeline
+app.include_router(cp_router, prefix="/api/v1")              # CP dashboard (new)
 
 
 @app.get("/health")
