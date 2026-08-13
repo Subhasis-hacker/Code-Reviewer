@@ -47,7 +47,7 @@ class Settings(BaseSettings):
     max_retry_count: int = Field(default=3, description="Max LangGraph refactor-loop iterations")
 
     # ── Supabase ──────────────────────────────────────────────────────────────
-    supabase_url:         str = Field(default="", description="Supabase project URL")
+    SUPABASE_URL:         str = Field(default="", description="Supabase project URL")
     supabase_service_key: str = Field(default="", description="Supabase service-role key (server only)")
     supabase_jwt_secret:  str = Field(default="", description="Supabase JWT secret for token verification")
 

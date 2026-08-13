@@ -19,3 +19,8 @@ lxml==5.2.2
 python-jose[cryptography]==3.3.0
 tenacity==8.3.0
 sse-starlette==2.1.0
+passlib
+jwt
+psycopg2-binary
+pydantic[email]
+bcrypt
