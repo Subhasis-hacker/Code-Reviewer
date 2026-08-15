@@ -1,4 +1,6 @@
 """
+backend/core/config.py
+======================
 Centralized configuration via Pydantic-Settings.
 Reads from environment variables / .env file.
 """
@@ -24,10 +26,10 @@ class Settings(BaseSettings):
     groq_api_key: str = Field(..., description="Groq Cloud API key (required)")
 
     # ── Model routing matrix ───────────────────────────────────────────────────
-    model_syntax:    str = Field(default="llama3-8b-8192",       description="Node 1.5 – Syntax micro-fixer")
-    model_profiler:  str = Field(default="llama3-8b-8192",       description="Node 2  – Big-O profiler")
-    model_edge_case: str = Field(default="mixtral-8x7b-32768",   description="Node 4  – Edge-case generator")
-    model_refactor:  str = Field(default="llama3-70b-8192",      description="Node 5  – Algorithmic refactorer")
+    model_syntax:    str = Field(default="llama3-8b-8192",     description="Node 1.5 – Syntax micro-fixer")
+    model_profiler:  str = Field(default="llama3-8b-8192",     description="Node 2  – Big-O profiler")
+    model_edge_case: str = Field(default="mixtral-8x7b-32768", description="Node 4  – Edge-case generator")
+    model_refactor:  str = Field(default="llama3-70b-8192",    description="Node 5  – Algorithmic refactorer")
 
     # ── Token caps ────────────────────────────────────────────────────────────
     max_tokens: int = Field(default=1024)
@@ -38,25 +40,37 @@ class Settings(BaseSettings):
     retry_wait_max:     float = Field(default=30.0)
 
     # ── Sandbox ───────────────────────────────────────────────────────────────
-    docker_host:      str   = Field(default="unix:///var/run/docker.sock")
-    sandbox_image:    str   = Field(default="python:3.11-slim")
-    sandbox_timeout:  float = Field(default=2.0)
-    sandbox_mem_limit: str  = Field(default="128m")
+    docker_host:       str   = Field(default="unix:///var/run/docker.sock")
+    sandbox_image:     str   = Field(default="python:3.11-slim")
+    sandbox_timeout:   float = Field(default=2.0)
+    sandbox_mem_limit: str   = Field(default="128m")
 
     # ── Graph ─────────────────────────────────────────────────────────────────
     max_retry_count: int = Field(default=3, description="Max LangGraph refactor-loop iterations")
 
-    # ── Supabase ──────────────────────────────────────────────────────────────
-    SUPABASE_URL:         str = Field(default="", description="Supabase project URL")
-    supabase_service_key: str = Field(default="", description="Supabase service-role key (server only)")
-    supabase_jwt_secret:  str = Field(default="", description="Supabase JWT secret for token verification")
+    # ── Supabase (Direct / Storage) ───────────────────────────────────────────
+    SUPABASE_URL:          str = Field(default="", description="Supabase project URL")
+    supabase_service_key:  str = Field(default="", description="Supabase service-role key (server only)")
+    supabase_jwt_secret:   str = Field(default="", description="Supabase JWT secret for token verification")
+    supabase_database_url: str = Field(default="", description="Supabase PostgreSQL connection string")
+
+    # ── Custom JWT Auth (SQLAlchemy Backend) ──────────────────────────────────
+    jwt_secret_key:     str = Field(default="your-super-secret-key-change-in-production", description="Secret key used for signing JWTs")
+    jwt_algorithm:      str = Field(default="HS256", description="JWT signing algorithm")
+    jwt_expire_minutes: int = Field(default=1440, description="Token expiration duration in minutes (1440 = 24 hours)")
 
     # ── CP Sync ───────────────────────────────────────────────────────────────
-    cp_sync_timeout:      float = Field(default=15.0, description="HTTPX timeout per CP platform fetch")
+    cp_sync_timeout: float = Field(default=15.0, description="HTTPX timeout per CP platform fetch")
 
-    # ── API ───────────────────────────────────────────────────────────────────
+    # ── API & CORS ────────────────────────────────────────────────────────────
     cors_origins: List[str] = Field(
-        default=["http://localhost:3000", "http://127.0.0.1:3000"]
+        default=[
+            "http://localhost:3000",
+            "http://127.0.0.1:3000",
+            "http://localhost:5173",
+            "http://127.0.0.1:5173",
+        ],
+        description="Allowed frontend origin URLs for CORS",
     )
 
     @field_validator("groq_api_key")
