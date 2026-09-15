@@ -200,8 +200,9 @@ async def fetch_leetcode(handle: str) -> PlatformStats:
         return base
 
     payload = {
-        "query":     _LEETCODE_QUERY,
-        "variables": {"username": handle},
+        "query":        _LEETCODE_QUERY,
+        "variables":    {"username": handle},
+        "operationName": "getUserProfile",
     }
     headers = {
         **_HEADERS,

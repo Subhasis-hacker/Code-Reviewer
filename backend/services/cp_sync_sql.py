@@ -35,6 +35,47 @@ from backend.core.models import CPProfile
 
 logger = logging.getLogger(__name__)
 
+# ── URL / username sanitisation ────────────────────────────────────────────────
+
+_URL_USERNAME_RE = re.compile(
+    r"leetcode\.com/u(?:sers)?/([^/\s]+)"
+    r"|codeforces\.com/profile/([^/\s]+)"
+    r"|codechef\.com/users/([^/\s]+)",
+    re.IGNORECASE,
+)
+
+
+def _extract_username(handle: str | None) -> str | None:
+    """Return the raw username from a full profile URL or plain handle.
+
+    Examples
+    --------
+    >>> _extract_username("https://leetcode.com/u/Subhasis_Jena/")
+    'Subhasis_Jena'
+    >>> _extract_username("https://codeforces.com/profile/J_U_J_U_08")
+    'J_U_J_U_08'
+    >>> _extract_username("https://www.codechef.com/users/Subhasis_cc")
+    'Subhasis_cc'
+    >>> _extract_username("Subhasis_Jena")
+    'Subhasis_Jena'
+    >>> _extract_username(None) is None
+    True
+    >>> _extract_username("") is None
+    True
+    """
+    if not handle:
+        return None
+
+    text = handle.strip()
+    if not text:
+        return None
+
+    m = _URL_USERNAME_RE.search(text)
+    if m:
+        return next(g for g in m.groups() if g is not None)
+
+    return text or None
+
 # ── HTTP config ───────────────────────────────────────────────────────────────
 
 _TIMEOUT = httpx.Timeout(15.0)
@@ -104,7 +145,11 @@ async def fetch_leetcode(handle: str) -> Dict[str, Any]:
         ) as client:
             resp = await client.post(
                 "https://leetcode.com/graphql",
-                json={"query": _LC_QUERY, "variables": {"username": handle}},
+                json={
+                    "query":         _LC_QUERY,
+                    "variables":     {"username": handle},
+                    "operationName": "getUserProfile",
+                },
             )
             resp.raise_for_status()
             data = resp.json()
@@ -358,9 +403,9 @@ async def sync_all_profiles(
     if cp is None:
         raise ValueError(f"No CP profile found for {email}")
 
-    lc_handle = (cp.leetcode_handle   or "").strip()
-    cf_handle = (cp.codeforces_handle or "").strip()
-    cc_handle = (cp.codechef_handle   or "").strip()
+    lc_handle = _extract_username(cp.leetcode_handle)
+    cf_handle = _extract_username(cp.codeforces_handle)
+    cc_handle = _extract_username(cp.codechef_handle)
 
     if not any([lc_handle, cf_handle, cc_handle]):
         raise ValueError("No platform handles saved. Add handles first.")
