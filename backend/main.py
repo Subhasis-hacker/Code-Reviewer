@@ -50,13 +50,10 @@ app = FastAPI(
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
-        # Local development
         "http://localhost:5173",
         "http://127.0.0.1:5173",
         "http://localhost:3000",
         "http://127.0.0.1:3000",
-
-        # Production frontend
         "https://code-reviewer-beige.vercel.app",
     ],
     allow_credentials=True,
