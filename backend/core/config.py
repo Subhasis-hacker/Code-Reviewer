@@ -1,10 +1,3 @@
-"""
-backend/core/config.py
-======================
-Centralized configuration via Pydantic-Settings.
-Reads from environment variables / .env file.
-"""
-
 from __future__ import annotations
 
 from functools import lru_cache
@@ -27,17 +20,17 @@ class Settings(BaseSettings):
 
     # ── Model routing matrix ───────────────────────────────────────────────────
     model_syntax: str = Field(
-        default="llama-3.3-70b-versatile",
+        default="llama-3.1-8b-instant",
         description="Node 1.5 – Syntax micro-fixer"
     )
 
     model_profiler: str = Field(
-        default="llama-3.3-70b-versatile",
+        default="llama-3.1-8b-instant",
         description="Node 2 – Big-O profiler"
     )
 
     model_edge_case: str = Field(
-        default="llama-3.3-70b-versatile",
+        default="mixtral-8x7b-32768",
         description="Node 4 – Edge-case generator"
     )
 
@@ -45,6 +38,7 @@ class Settings(BaseSettings):
         default="llama-3.3-70b-versatile",
         description="Node 5 – Algorithmic refactorer"
     )
+    
     # ── Token caps ────────────────────────────────────────────────────────────
     max_tokens: int = Field(default=1024)
 
@@ -66,8 +60,7 @@ class Settings(BaseSettings):
     SUPABASE_URL:          str = Field(default="", description="Supabase project URL")
     supabase_service_key:  str = Field(default="", description="Supabase service-role key (server only)")
     supabase_jwt_secret:   str = Field(default="", description="Supabase JWT secret for token verification")
-    supabase_database_url: str = Field(default="", description="Supabase PostgreSQL connection string")
-
+    
     # ── Custom JWT Auth (SQLAlchemy Backend) ──────────────────────────────────
     jwt_secret_key:     str = Field(default="your-super-secret-key-change-in-production", description="Secret key used for signing JWTs")
     jwt_algorithm:      str = Field(default="HS256", description="JWT signing algorithm")
