@@ -1,7 +1,7 @@
 import axios from 'axios';
 
-const apiClient = axios.create({
-  baseURL: 'https://code-reviewer-backend-yxx4.onrender.com/',
+const api = axios.create({
+    baseURL: "https://code-reviewer-backend-yxx4.onrender.com/api/v1"
 });
 
 // Auto-inject JWT token to every protected request
