@@ -90,6 +90,10 @@ def _create_tables() -> None:
         logger.error("Table creation failed (non-fatal): %s", exc)
 
 
-@app.get("/health")
-async def health() -> dict:
-    return {"status": "ok", "service": "AlgoReviewer", "version": "2.0.0"}
+@app.get("/")
+async def root():
+    return {
+        "status": "ok",
+        "service": "AlgoReviewer",
+        "version": "2.0.0"
+    }
