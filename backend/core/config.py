@@ -26,11 +26,25 @@ class Settings(BaseSettings):
     groq_api_key: str = Field(..., description="Groq Cloud API key (required)")
 
     # ── Model routing matrix ───────────────────────────────────────────────────
-    model_syntax:    str = Field(default="llama3-8b-8192",     description="Node 1.5 – Syntax micro-fixer")
-    model_profiler:  str = Field(default="llama3-8b-8192",     description="Node 2  – Big-O profiler")
-    model_edge_case: str = Field(default="mixtral-8x7b-32768", description="Node 4  – Edge-case generator")
-    model_refactor:  str = Field(default="llama3-70b-8192",    description="Node 5  – Algorithmic refactorer")
+    model_syntax: str = Field(
+        default="llama-3.3-70b-versatile",
+        description="Node 1.5 – Syntax micro-fixer"
+    )
 
+    model_profiler: str = Field(
+        default="llama-3.3-70b-versatile",
+        description="Node 2 – Big-O profiler"
+    )
+
+    model_edge_case: str = Field(
+        default="llama-3.3-70b-versatile",
+        description="Node 4 – Edge-case generator"
+    )
+
+    model_refactor: str = Field(
+        default="llama-3.3-70b-versatile",
+        description="Node 5 – Algorithmic refactorer"
+    )
     # ── Token caps ────────────────────────────────────────────────────────────
     max_tokens: int = Field(default=1024)
 
