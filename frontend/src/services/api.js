@@ -14,9 +14,9 @@ apiClient.interceptors.request.use((config) => {
 });
 
 export const authAPI = {
-  login: (data) => apiClient.post('/auth/login', data),
-  register: (data) => apiClient.post('/auth/register', data),
-  getMe: () => apiClient.get('/auth/me'),
+  login: (data) => apiClient.post("/api/v1/auth/login", data),
+  register: (data) => apiClient.post("/api/v1/auth/register", data),
+  getMe: () => apiClient.get("/api/v1/auth/me"),
 };
 
 export const cpAPI = {
