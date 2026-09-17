@@ -22,7 +22,7 @@ export default function CodeReviewer() {
     setResult(null);
 
     try {
-      const response = await fetch('http://127.0.0.1:8000/api/v1/review', {
+      const response = await fetch("https://code-reviewer-backend-yxx4.onrender.com/api/v1/review", {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         // Now passing the dynamic problem description to the backend payload
