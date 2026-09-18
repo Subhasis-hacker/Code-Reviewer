@@ -20,12 +20,12 @@ class Settings(BaseSettings):
 
     # ── Model routing matrix ───────────────────────────────────────────────────
     model_syntax: str = Field(
-        default="llama-3.1-8b-instant",
+        default="qwen/qwen3.6-27b",
         description="Node 1.5 – Syntax micro-fixer"
     )
 
     model_profiler: str = Field(
-        default="llama-3.1-8b-instant",
+        default="qwen/qwen3.6-27b",
         description="Node 2 – Big-O profiler"
     )
 
@@ -35,7 +35,7 @@ class Settings(BaseSettings):
     )
 
     model_refactor: str = Field(
-        default="llama-3.3-70b-versatile",
+        default="qwen/qwen3.6-27b",
         description="Node 5 – Algorithmic refactorer"
     )
     
