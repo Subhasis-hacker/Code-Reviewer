@@ -24,22 +24,22 @@ class Settings(BaseSettings):
 
     # ─── Model routing matrix ────────────────────────────────────────────────
     model_syntax: str = Field(
-        default="gemini-2.5-flash",
+        default="gemini-3.8-flash",
         description="Node 1.5 – Syntax micro-fixer"
     )
 
     model_profiler: str = Field(
-        default="gemini-2.5-flash",
+        default="gemini-3.8-flash",
         description="Node 2 – Big-O profiler"
     )
 
     model_edge_case: str = Field(
-        default="gemini-2.5-flash",
+        default="gemini-3.8-flash",
         description="Node 4 – Edge-case generator"
     )
 
     model_refactor: str = Field(
-        default="gemini-2.5-flash",
+        default="gemini-3.8-flash",
         description="Node 5 – Algorithmic refactorer"
     )
 
