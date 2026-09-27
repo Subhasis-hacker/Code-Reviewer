@@ -21,7 +21,6 @@ from typing import Any, Callable
 
 from dotenv import load_dotenv
 from langchain_google_genai import ChatGoogleGenerativeAI
-
 from tenacity import (
     before_sleep_log,
     retry,
@@ -35,18 +34,11 @@ from backend.core.config import get_settings
 load_dotenv()
 
 logger = logging.getLogger(__name__)
-
 settings = get_settings()
 
 
-# ─── Gemini LLM factory ─────────────────────────────────────────────────────
-
 @lru_cache(maxsize=8)
 def get_llm(model_name: str) -> ChatGoogleGenerativeAI:
-    """
-    Return a cached Gemini LLM instance for the given model.
-    """
-
     return ChatGoogleGenerativeAI(
         model=model_name,
         google_api_key=settings.gemini_api_key,
@@ -55,16 +47,7 @@ def get_llm(model_name: str) -> ChatGoogleGenerativeAI:
     )
 
 
-# ─── Retry decorator ────────────────────────────────────────────────────────
-
 def with_gemini_retry(func: Callable) -> Callable:
-    """
-    Retry Gemini calls with exponential backoff.
-
-    Waits:
-    2s → 4s → 8s → 16s → 30s
-    """
-
     @retry(
         retry=retry_if_exception_type(Exception),
         wait=wait_exponential(
@@ -73,10 +56,7 @@ def with_gemini_retry(func: Callable) -> Callable:
             max=settings.retry_wait_max,
         ),
         stop=stop_after_attempt(settings.retry_max_attempts),
-        before_sleep=before_sleep_log(
-            logger,
-            logging.WARNING
-        ),
+        before_sleep=before_sleep_log(logger, logging.WARNING),
         reraise=True,
     )
     def wrapper(*args: Any, **kwargs: Any) -> Any:
@@ -85,21 +65,11 @@ def with_gemini_retry(func: Callable) -> Callable:
     return wrapper
 
 
-# ─── Invoke helper ──────────────────────────────────────────────────────────
-
 def invoke_llm(model_name: str, messages: list) -> str:
-    """
-    Retrieve the cached Gemini LLM, invoke it,
-    and return the string content.
-    """
-
     @with_gemini_retry
     def _invoke() -> str:
-
         llm = get_llm(model_name)
-
         response = llm.invoke(messages)
-
         return response.content
 
     return _invoke()
