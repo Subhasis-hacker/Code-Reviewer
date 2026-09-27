@@ -1,18 +1,3 @@
-"""
-Centralized Groq LLM factory with Tenacity exponential-backoff retry.
-
-Every agent calls `get_llm(model_name)` – never instantiates ChatGroq directly.
-The `groq_call_with_retry` decorator wraps the actual invoke so that
-groq.RateLimitError triggers backoff without crashing the graph.
-"""
-
-"""
-Centralized Gemini LLM factory.
-
-Every agent calls get_llm(model_name).
-No agent directly creates a Gemini model.
-"""
-
 from __future__ import annotations
 
 import logging
