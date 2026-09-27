@@ -29,7 +29,7 @@ lxml==5.2.2
 python-jose[cryptography]==3.3.0
 PyJWT
 
-psycopg2-binary
+psycopg[binary]
 
 bcrypt==4.0.1
 passlib==1.7.4
