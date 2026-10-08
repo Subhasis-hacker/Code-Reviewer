@@ -75,10 +75,12 @@ def _cp_profile_to_dict(cp: CPProfile) -> Dict[str, Any]:
             "rating":        cp.cc_rating,
             "max_rating":    cp.cc_max_rating,
             "rank":          cp.cc_stars or "",
+            "stars":         cp.cc_stars or "",
             "easy_solved":   int((cp.cc_total_solved or 0) * 0.55),
             "medium_solved": int((cp.cc_total_solved or 0) * 0.35),
             "hard_solved":   (cp.cc_total_solved or 0) - int((cp.cc_total_solved or 0) * 0.55) - int((cp.cc_total_solved or 0) * 0.35),
             "total_solved":  cp.cc_total_solved or 0,
+            "error":         None,
         },
         "totals": {
             "easy":   (cp.lc_easy_solved or 0) + int((cp.cc_total_solved or 0) * 0.55),

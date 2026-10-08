@@ -46,6 +46,12 @@ export default function CPDashboard() {
 
   if (loading) return <div className="p-8 text-zinc-400 flex items-center justify-center gap-3 h-full"><RefreshCw className="animate-spin" /> Fetching Subroutines...</div>;
 
+  const displayMetric = (platformData, key) => {
+    if (platformData?.error) return 'Unavailable';
+    const value = platformData?.[key];
+    return value === null || value === undefined ? 'Unavailable' : value;
+  };
+
   const chartData = data ? [
     { name: 'Easy', value: data.totals.easy, color: '#10b981' },
     { name: 'Medium', value: data.totals.medium, color: '#f59e0b' },
@@ -94,11 +100,11 @@ export default function CPDashboard() {
                 <div className="flex justify-between items-end">
                   <div>
                     <p className="text-sm text-zinc-500">Current Rating</p>
-                    <p className="text-4xl font-black text-zinc-100">{data[plat].rating || 0}</p>
+                    <p className="text-4xl font-black text-zinc-100">{displayMetric(data[plat], 'rating')}</p>
                   </div>
                   <div className="text-right">
                     <p className="text-sm text-zinc-500">Solved</p>
-                    <p className="text-xl font-bold text-emerald-400">{data[plat].total_solved || 0}</p>
+                    <p className="text-xl font-bold text-emerald-400">{displayMetric(data[plat], 'total_solved')}</p>
                   </div>
                 </div>
                 {data[plat].error && (

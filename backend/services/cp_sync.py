@@ -84,6 +84,40 @@ def _normalize_platform_handle(platform: str, handle: str) -> str:
     return unquote(text) if _PLAIN_HANDLE_RE.fullmatch(text) else ""
 
 
+def _parse_first_int(text: str | None) -> Optional[int]:
+    if not text:
+        return None
+    match = re.search(r"\b(\d{1,6})\b", text.replace(",", ""))
+    return int(match.group(1)) if match else None
+
+
+def _parse_codechef_solved_count(soup: BeautifulSoup) -> Optional[int]:
+    solved_section = soup.select_one("section.rating-data-section.problems-solved")
+    section_text = solved_section.get_text(" ", strip=True) if solved_section else ""
+
+    match = re.search(r"Total\s+Problems\s+Solved\s*:?\s*(\d+)", section_text, re.IGNORECASE)
+    if match:
+        return int(match.group(1))
+
+    fully_solved_section = soup.find(string=re.compile(r"Fully\s+Solved", re.IGNORECASE))
+    if fully_solved_section:
+        header = fully_solved_section.find_parent()
+        match = re.search(r"\((\d+)\)", header.get_text(" ", strip=True) if header else "")
+        if match:
+            return int(match.group(1))
+
+    match = re.search(r"Total\s+Problems\s+Solved\s*:?\s*(\d+)", soup.get_text(" ", strip=True), re.IGNORECASE)
+    if match:
+        return int(match.group(1))
+
+    if solved_section:
+        problem_links = solved_section.select("p a")
+        if problem_links:
+            return len(problem_links)
+
+    return None
+
+
 # ── Data models ───────────────────────────────────────────────────────────────
 
 @dataclass
@@ -334,7 +368,17 @@ async def fetch_codechef(handle: str) -> PlatformStats:
             return base
 
         resp.raise_for_status()
+        final_path = httpx.URL(str(resp.url)).path.rstrip("/")
+        if final_path != f"/users/{handle}":
+            base.error = f"CodeChef handle '{handle}' not found"
+            logger.warning("[CP] CodeChef: %s", base.error)
+            return base
+
         soup = BeautifulSoup(resp.text, "html.parser")
+        if not soup.select_one(".widget-rating") and not soup.select_one(".problems-solved"):
+            base.error = "CodeChef profile data was not available"
+            logger.warning("[CP] CodeChef %s: %s", handle, base.error)
+            return base
 
         # ── Star rating (e.g. "★★★★") ─────────────────────────────────────
         star_tag = soup.select_one(".rating")
@@ -346,35 +390,38 @@ async def fetch_codechef(handle: str) -> PlatformStats:
         # Pattern: <div class="rating-number">1854</div>
         rating_el = soup.select_one(".rating-number")
         if rating_el:
-            try:
-                base.rating = int(rating_el.get_text(strip=True))
-            except ValueError:
-                pass
+            parsed_rating = _parse_first_int(rating_el.get_text(" ", strip=True))
+            if parsed_rating is not None:
+                base.rating = parsed_rating
+        if base.rating == 0:
+            rating_container = soup.select_one(".rating-container")
+            parsed_rating = _parse_first_int(
+                rating_container.get_text(" ", strip=True) if rating_container else None
+            )
+            if parsed_rating is not None:
+                base.rating = parsed_rating
+        if base.rating == 0:
+            base.error = "current rating unavailable"
+            logger.warning("[CP] CodeChef %s: failed to parse current rating", handle)
 
         # Pattern: <small>...max rating: <b>1960</b>...</small>
         max_rating_text = soup.find(string=re.compile(r"max\s+rating", re.IGNORECASE))
         if max_rating_text:
             parent = max_rating_text.parent if max_rating_text else None
             b_tag  = parent.find_next("b") if parent else None
-            if b_tag:
-                try:
-                    base.max_rating = int(b_tag.get_text(strip=True).replace(",", ""))
-                except ValueError:
-                    pass
+            parsed_max = _parse_first_int(b_tag.get_text(" ", strip=True) if b_tag else None)
+            if parsed_max is not None:
+                base.max_rating = parsed_max
 
         if base.max_rating == 0:
             base.max_rating = base.rating
 
         # ── Problems solved ───────────────────────────────────────────────
-        # CodeChef profile shows sections like "Fully Solved (N)"
-        fully_solved_section = soup.find(string=re.compile(r"Fully\s+Solved", re.IGNORECASE))
-        total_solved = 0
-        if fully_solved_section:
-            header = fully_solved_section.find_parent()
-            if header:
-                num_match = re.search(r"\((\d+)\)", header.get_text())
-                if num_match:
-                    total_solved = int(num_match.group(1))
+        total_solved = _parse_codechef_solved_count(soup)
+        if total_solved is None:
+            total_solved = 0
+            base.error = "; ".join(filter(None, [base.error, "solved count unavailable"]))
+            logger.warning("[CP] CodeChef %s: failed to parse solved count", handle)
 
         # Approximate difficulty split: CodeChef doesn't tag by difficulty,
         # so we bucket by presumed rating bands of problems on the platform.

@@ -139,6 +139,7 @@ def _empty_stats(platform: str, handle: str, error: str = "") -> Dict[str, Any]:
         "rating":       0,
         "max_rating":   0,
         "rank":         "",
+        "stars":        "",
         "easy_solved":  0,
         "medium_solved": 0,
         "hard_solved":  0,
@@ -353,6 +354,40 @@ async def fetch_codeforces(handle: str) -> Dict[str, Any]:
 
 # ── CodeChef fetcher (bs4 scraper) ───────────────────────────────────────────
 
+def _parse_first_int(text: str | None) -> Optional[int]:
+    if not text:
+        return None
+    match = re.search(r"\b(\d{1,6})\b", text.replace(",", ""))
+    return int(match.group(1)) if match else None
+
+
+def _parse_codechef_solved_count(soup: BeautifulSoup) -> Optional[int]:
+    solved_section = soup.select_one("section.rating-data-section.problems-solved")
+    section_text = solved_section.get_text(" ", strip=True) if solved_section else ""
+
+    match = re.search(r"Total\s+Problems\s+Solved\s*:?\s*(\d+)", section_text, re.IGNORECASE)
+    if match:
+        return int(match.group(1))
+
+    fully_heading = soup.find(string=re.compile(r"Fully\s+Solved", re.IGNORECASE))
+    if fully_heading:
+        parent = fully_heading.find_parent()
+        match = re.search(r"\((\d+)\)", parent.get_text(" ", strip=True) if parent else "")
+        if match:
+            return int(match.group(1))
+
+    match = re.search(r"Total\s+Problems\s+Solved\s*:?\s*(\d+)", soup.get_text(" ", strip=True), re.IGNORECASE)
+    if match:
+        return int(match.group(1))
+
+    if solved_section:
+        problem_links = solved_section.select("p a")
+        if problem_links:
+            return len(problem_links)
+
+    return None
+
+
 async def fetch_codechef(handle: str) -> Dict[str, Any]:
     """
     Scrape https://www.codechef.com/users/{handle}.
@@ -363,6 +398,7 @@ async def fetch_codechef(handle: str) -> Dict[str, Any]:
     - Current rating and max rating
     - Number of fully-solved problems
     """
+    handle = normalize_platform_handle("codechef", handle)
     if not handle:
         return _empty_stats("codechef", handle, "no handle provided")
 
@@ -377,7 +413,13 @@ async def fetch_codechef(handle: str) -> Dict[str, Any]:
             return _empty_stats("codechef", handle, f"Handle '{handle}' not found on CodeChef")
         resp.raise_for_status()
 
+        final_path = httpx.URL(str(resp.url)).path.rstrip("/")
+        if final_path != f"/users/{handle}":
+            return _empty_stats("codechef", handle, f"Handle '{handle}' not found on CodeChef")
+
         soup = BeautifulSoup(resp.text, "lxml")
+        if not soup.select_one(".widget-rating") and not soup.select_one(".problems-solved"):
+            return _empty_stats("codechef", handle, "CodeChef profile data was not available")
 
         # ── Stars ────────────────────────────────────────────────────────────
         stars = ""
@@ -386,30 +428,31 @@ async def fetch_codechef(handle: str) -> Dict[str, Any]:
             stars = star_tag.get_text(strip=True)
 
         # ── Current rating ────────────────────────────────────────────────────
-        current_rating = 0
+        current_rating: Optional[int] = None
         rating_num_tag = soup.select_one(".rating-number")
         if rating_num_tag:
-            raw = rating_num_tag.get_text(strip=True).replace(",", "")
-            try:
-                current_rating = int(raw)
-            except ValueError:
-                pass
+            current_rating = _parse_first_int(rating_num_tag.get_text(" ", strip=True))
+        if current_rating is None:
+            rating_container = soup.select_one(".rating-container")
+            current_rating = _parse_first_int(
+                rating_container.get_text(" ", strip=True) if rating_container else None
+            )
+        if current_rating is None:
+            logger.warning("[CC] %s → failed to parse current rating", handle)
 
         # ── Max rating ────────────────────────────────────────────────────────
         # Appears as: "Highest Rating <b>1985</b>"
-        max_rating = current_rating
+        max_rating = current_rating or 0
         highest_label = soup.find(string=re.compile(r"highest\s+rating", re.IGNORECASE))
         if highest_label:
             parent = highest_label.find_parent()
             b_tag  = parent.find("b") if parent else None
-            if b_tag:
-                try:
-                    max_rating = int(b_tag.get_text(strip=True).replace(",", ""))
-                except ValueError:
-                    pass
+            parsed_max = _parse_first_int(b_tag.get_text(" ", strip=True) if b_tag else None)
+            if parsed_max is not None:
+                max_rating = parsed_max
 
         # Fallback: search the profile header section
-        if max_rating == current_rating:
+        if max_rating == (current_rating or 0):
             header_section = soup.select_one(".rating-header")
             if header_section:
                 all_ratings = re.findall(r"\b(\d{3,4})\b", header_section.get_text())
@@ -420,32 +463,24 @@ async def fetch_codechef(handle: str) -> Dict[str, Any]:
                         pass
 
         # ── Fully solved count ────────────────────────────────────────────────
-        total_solved = 0
+        total_solved = _parse_codechef_solved_count(soup)
+        solved_count_unavailable = total_solved is None
+        if total_solved is None:
+            logger.warning("[CC] %s → failed to parse solved count", handle)
+            total_solved = 0
 
-        # Strategy 1: "Fully Solved (N)" heading
-        fully_heading = soup.find(string=re.compile(r"Fully\s+Solved", re.IGNORECASE))
-        if fully_heading:
-            parent = fully_heading.find_parent()
-            if parent:
-                m = re.search(r"\((\d+)\)", parent.get_text())
-                if m:
-                    total_solved = int(m.group(1))
-
-        # Strategy 2: count individual problem links under the solved section
-        if total_solved == 0:
+        errors = []
+        if current_rating is None:
+            errors.append("current rating unavailable")
+            current_rating = 0
+        page_text = soup.get_text(" ", strip=True)
+        solved_zero_was_explicit = re.search(r"Total\s+Problems\s+Solved\s*:?\s*0\b", page_text, re.IGNORECASE)
+        if solved_count_unavailable:
+            errors.append("solved count unavailable")
+        elif total_solved == 0 and not solved_zero_was_explicit:
             solved_section = soup.select_one("section.rating-data-section.problems-solved")
-            if solved_section:
-                # each problem is a <a> tag in a <p>
-                problem_links = solved_section.select("p a")
-                total_solved = len(problem_links)
-
-        # Strategy 3: scan page for "N problems" text
-        if total_solved == 0:
-            problems_text = soup.find(string=re.compile(r"(\d+)\s+problems?\s+solved", re.IGNORECASE))
-            if problems_text:
-                m = re.search(r"(\d+)", problems_text)
-                if m:
-                    total_solved = int(m.group(1))
+            if solved_section is None:
+                errors.append("solved count unavailable")
 
         # Approximate difficulty split (CodeChef doesn't tag by difficulty)
         if total_solved > 0:
@@ -465,11 +500,12 @@ async def fetch_codechef(handle: str) -> Dict[str, Any]:
             "rating":        current_rating,
             "max_rating":    max_rating,
             "rank":          stars,
+            "stars":         stars,
             "easy_solved":   easy,
             "medium_solved": medium,
             "hard_solved":   hard,
             "total_solved":  total_solved,
-            "error":         None,
+            "error":         "; ".join(errors) if errors else None,
         }
 
     except httpx.HTTPStatusError as exc:
@@ -531,10 +567,13 @@ async def sync_all_profiles(
     cp.cf_max_rating = cf["max_rating"]
     cp.cf_rank       = cf["rank"]
 
-    cp.cc_rating       = cc["rating"]
-    cp.cc_max_rating   = cc["max_rating"]
-    cp.cc_stars        = cc["rank"]
-    cp.cc_total_solved = cc["total_solved"]
+    if cc.get("error"):
+        logger.warning("[CP] Skipping CodeChef stats persistence for %s: %s", cc_handle, cc["error"])
+    else:
+        cp.cc_rating       = cc["rating"]
+        cp.cc_max_rating   = cc["max_rating"]
+        cp.cc_stars        = cc.get("stars") or cc["rank"]
+        cp.cc_total_solved = cc["total_solved"]
 
     cp.last_synced_at = now
     db.commit()
