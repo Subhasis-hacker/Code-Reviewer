@@ -26,7 +26,9 @@ import asyncio
 import logging
 import re
 from datetime import datetime, timezone
+from json import JSONDecodeError
 from typing import Any, Dict, Optional
+from urllib.parse import unquote, urlparse
 import httpx
 from bs4 import BeautifulSoup
 from sqlalchemy.orm import Session
@@ -37,30 +39,43 @@ logger = logging.getLogger(__name__)
 
 # ── URL / username sanitisation ────────────────────────────────────────────────
 
-_URL_USERNAME_RE = re.compile(
-    r"leetcode\.com/u(?:sers)?/([^/\s]+)"
-    r"|codeforces\.com/profile/([^/\s]+)"
-    r"|codechef\.com/users/([^/\s]+)",
-    re.IGNORECASE,
-)
+_PLATFORM_URLS = {
+    "leetcode": {
+        "hosts": {"leetcode.com", "www.leetcode.com"},
+        "prefixes": {"u", "users"},
+    },
+    "codeforces": {
+        "hosts": {"codeforces.com", "www.codeforces.com"},
+        "prefixes": {"profile"},
+    },
+    "codechef": {
+        "hosts": {"codechef.com", "www.codechef.com"},
+        "prefixes": {"users"},
+    },
+}
+_PLAIN_HANDLE_RE = re.compile(r"^[A-Za-z0-9_.-]+$")
 
 
-def _extract_username(handle: str | None) -> str | None:
-    """Return the raw username from a full profile URL or plain handle.
+def normalize_platform_handle(platform: str, handle: str | None) -> str | None:
+    """Return a platform username from a profile URL or plain handle.
 
     Examples
     --------
-    >>> _extract_username("https://leetcode.com/u/Subhasis_Jena/")
+    >>> normalize_platform_handle("leetcode", "https://leetcode.com/u/Subhasis_Jena/")
     'Subhasis_Jena'
-    >>> _extract_username("https://codeforces.com/profile/J_U_J_U_08")
+    >>> normalize_platform_handle("leetcode", "https://leetcode.com/u/Subhasis_Jena")
+    'Subhasis_Jena'
+    >>> normalize_platform_handle("codeforces", "https://codeforces.com/profile/J_U_J_U_08")
     'J_U_J_U_08'
-    >>> _extract_username("https://www.codechef.com/users/Subhasis_cc")
+    >>> normalize_platform_handle("codechef", "https://www.codechef.com/users/Subhasis_cc")
     'Subhasis_cc'
-    >>> _extract_username("Subhasis_Jena")
+    >>> normalize_platform_handle("leetcode", "Subhasis_Jena")
     'Subhasis_Jena'
-    >>> _extract_username(None) is None
+    >>> normalize_platform_handle("leetcode", "https://example.com/test") is None
     True
-    >>> _extract_username("") is None
+    >>> normalize_platform_handle("leetcode", None) is None
+    True
+    >>> normalize_platform_handle("leetcode", "") is None
     True
     """
     if not handle:
@@ -70,11 +85,37 @@ def _extract_username(handle: str | None) -> str | None:
     if not text:
         return None
 
-    m = _URL_USERNAME_RE.search(text)
-    if m:
-        return next(g for g in m.groups() if g is not None)
+    platform_key = platform.lower()
+    cfg = _PLATFORM_URLS.get(platform_key)
+    if not cfg:
+        return text if _PLAIN_HANDLE_RE.fullmatch(text) else None
 
-    return text or None
+    parsed = urlparse(text)
+    if parsed.scheme or parsed.netloc:
+        if parsed.scheme not in {"http", "https"}:
+            return None
+        host = parsed.netloc.lower()
+        if host not in cfg["hosts"]:
+            return None
+        parts = [unquote(part) for part in parsed.path.split("/") if part]
+        if len(parts) != 2 or parts[0].lower() not in cfg["prefixes"]:
+            return None
+        username = parts[1].strip()
+        return username if _PLAIN_HANDLE_RE.fullmatch(username) else None
+
+    if any(ch in text for ch in "/?#") or not _PLAIN_HANDLE_RE.fullmatch(text):
+        return None
+
+    return unquote(text) or None
+
+
+def _extract_username(handle: str | None) -> str | None:
+    """Backward-compatible generic extractor for saved handles."""
+    for platform in ("leetcode", "codeforces", "codechef"):
+        username = normalize_platform_handle(platform, handle)
+        if username:
+            return username
+    return None
 
 # ── HTTP config ───────────────────────────────────────────────────────────────
 
@@ -85,7 +126,7 @@ _HEADERS = {
         "(KHTML, like Gecko) Chrome/124.0 Safari/537.36"
     ),
     "Accept-Language": "en-US,en;q=0.9",
-    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+    "Accept": "application/json, text/plain, */*",
 }
 
 
@@ -118,18 +159,20 @@ query getUserProfile($username: String!) {
         count
       }
     }
-    userContestRanking {
-      rating
-      globalRanking
-    }
     profile {
       ranking
     }
+  }
+  userContestRanking(username: $username) {
+    rating
+    globalRanking
+    attendedContestsCount
   }
 }
 """
 
 async def fetch_leetcode(handle: str) -> Dict[str, Any]:
+    handle = normalize_platform_handle("leetcode", handle)
     if not handle:
         return _empty_stats("leetcode", handle, "no handle provided")
 
@@ -151,25 +194,61 @@ async def fetch_leetcode(handle: str) -> Dict[str, Any]:
                     "operationName": "getUserProfile",
                 },
             )
-            resp.raise_for_status()
-            data = resp.json()
+            try:
+                data = resp.json()
+            except JSONDecodeError:
+                resp.raise_for_status()
+                logger.error("[LC] %s returned non-JSON body: status=%d", handle, resp.status_code)
+                return _empty_stats("leetcode", handle, "LeetCode returned an invalid response")
 
-        user = (data.get("data") or {}).get("matchedUser")
+            graphql_errors = data.get("errors") if isinstance(data, dict) else None
+            if graphql_errors:
+                message = "; ".join(
+                    str(error.get("message", "GraphQL error"))
+                    for error in graphql_errors
+                    if isinstance(error, dict)
+                ) or "GraphQL error"
+                logger.error("[LC] %s GraphQL error: %s", handle, message)
+                return _empty_stats("leetcode", handle, f"LeetCode API error: {message}")
+
+            try:
+                resp.raise_for_status()
+            except httpx.HTTPStatusError:
+                raise
+
+        if not isinstance(data, dict):
+            return _empty_stats("leetcode", handle, "LeetCode returned a malformed response")
+
+        response_data = data.get("data")
+        if response_data is None:
+            logger.error("[LC] %s response missing data: status=%d", handle, resp.status_code)
+            return _empty_stats("leetcode", handle, "LeetCode returned no profile data")
+        if not isinstance(response_data, dict):
+            return _empty_stats("leetcode", handle, "LeetCode returned malformed profile data")
+
+        user = response_data.get("matchedUser")
         if user is None:
             return _empty_stats("leetcode", handle, f"User '{handle}' not found on LeetCode")
+        if not isinstance(user, dict):
+            return _empty_stats("leetcode", handle, "LeetCode returned malformed user data")
 
         # Parse difficulty counts
-        counts = {
-            entry["difficulty"].lower(): entry["count"]
-            for entry in (
-                (user.get("submitStatsGlobal") or {}).get("acSubmissionNum") or []
-            )
-        }
+        counts = {}
+        ac_counts = (user.get("submitStatsGlobal") or {}).get("acSubmissionNum") or []
+        if isinstance(ac_counts, list):
+            for entry in ac_counts:
+                if not isinstance(entry, dict):
+                    continue
+                difficulty = str(entry.get("difficulty", "")).lower()
+                try:
+                    counts[difficulty] = int(entry.get("count", 0) or 0)
+                except (TypeError, ValueError):
+                    counts[difficulty] = 0
         easy   = counts.get("easy",   0)
         medium = counts.get("medium", 0)
         hard   = counts.get("hard",   0)
 
-        contest = user.get("userContestRanking") or {}
+        contest = response_data.get("userContestRanking") or {}
         rating  = int(contest.get("rating", 0) or 0)
 
         logger.info("[LC] %s → easy=%d med=%d hard=%d rating=%d", handle, easy, medium, hard, rating)
@@ -178,7 +257,7 @@ async def fetch_leetcode(handle: str) -> Dict[str, Any]:
             "handle":        handle,
             "rating":        rating,
             "max_rating":    rating,
-            "rank":          str(contest.get("globalRanking", "") or ""),
+            "rank":          str(contest.get("globalRanking") or (user.get("profile") or {}).get("ranking") or ""),
             "easy_solved":   easy,
             "medium_solved": medium,
             "hard_solved":   hard,
@@ -187,12 +266,29 @@ async def fetch_leetcode(handle: str) -> Dict[str, Any]:
         }
 
     except httpx.HTTPStatusError as exc:
-        err = f"HTTP {exc.response.status_code}"
+        code = exc.response.status_code
+        if code == 403:
+            err = "LeetCode refused the request"
+        elif code == 429:
+            err = "LeetCode rate limited the request"
+        elif code >= 500:
+            err = "LeetCode is temporarily unavailable"
+        else:
+            err = f"LeetCode HTTP {code}"
         logger.error("[LC] %s → %s", handle, err)
         return _empty_stats("leetcode", handle, err)
+    except httpx.TimeoutException:
+        logger.error("[LC] %s → timeout", handle)
+        return _empty_stats("leetcode", handle, "LeetCode request timed out")
+    except httpx.ConnectError as exc:
+        logger.error("[LC] %s → connection error: %s", handle, exc)
+        return _empty_stats("leetcode", handle, "Unable to connect to LeetCode")
+    except httpx.RequestError as exc:
+        logger.error("[LC] %s → request error: %s", handle, exc)
+        return _empty_stats("leetcode", handle, "Unable to fetch LeetCode profile")
     except Exception as exc:
         logger.error("[LC] %s → %s", handle, exc)
-        return _empty_stats("leetcode", handle, str(exc))
+        return _empty_stats("leetcode", handle, "Unable to parse LeetCode profile")
 
 
 # ── Codeforces fetcher ────────────────────────────────────────────────────────
@@ -403,9 +499,9 @@ async def sync_all_profiles(
     if cp is None:
         raise ValueError(f"No CP profile found for {email}")
 
-    lc_handle = _extract_username(cp.leetcode_handle)
-    cf_handle = _extract_username(cp.codeforces_handle)
-    cc_handle = _extract_username(cp.codechef_handle)
+    lc_handle = normalize_platform_handle("leetcode", cp.leetcode_handle)
+    cf_handle = normalize_platform_handle("codeforces", cp.codeforces_handle)
+    cc_handle = normalize_platform_handle("codechef", cp.codechef_handle)
 
     if not any([lc_handle, cf_handle, cc_handle]):
         raise ValueError("No platform handles saved. Add handles first.")

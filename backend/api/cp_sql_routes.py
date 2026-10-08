@@ -15,7 +15,6 @@ Endpoints
 from __future__ import annotations
 
 import logging
-import re
 from typing import Any, Dict, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, status
@@ -25,61 +24,17 @@ from sqlalchemy.orm import Session
 from backend.api.deps import get_current_user
 from backend.core.database import get_db
 from backend.core.models import CPProfile, User
-from backend.services.cp_sync_sql import sync_all_profiles
+from backend.services.cp_sync_sql import normalize_platform_handle, sync_all_profiles
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/cp2", tags=["CP Dashboard (JWT Auth)"])
 
-# ── URL / username sanitisation ────────────────────────────────────────────────
-
-_URL_USERNAME_RE = re.compile(
-    r"leetcode\.com/u(?:sers)?/([^/\s]+)"
-    r"|codeforces\.com/profile/([^/\s]+)"
-    r"|codechef\.com/users/([^/\s]+)",
-    re.IGNORECASE,
-)
-
-
-def _extract_username(handle: str | None) -> str | None:
-    """Return the raw username from a full profile URL or plain handle.
-
-    Examples
-    --------
-    >>> _extract_username("https://leetcode.com/u/Subhasis_Jena/")
-    'Subhasis_Jena'
-    >>> _extract_username("https://codeforces.com/profile/J_U_J_U_08")
-    'J_U_J_U_08'
-    >>> _extract_username("https://www.codechef.com/users/Subhasis_cc")
-    'Subhasis_cc'
-    >>> _extract_username("Subhasis_Jena")
-    'Subhasis_Jena'
-    >>> _extract_username(None) is None
-    True
-    >>> _extract_username("") is None
-    True
-    """
-    if not handle:
-        return None
-
-    text = handle.strip()
-    if not text:
-        return None
-
-    m = _URL_USERNAME_RE.search(text)
-    if m:
-        # Return whichever capture group matched
-        return next(g for g in m.groups() if g is not None)
-
-    # Not a known URL — treat the whole value as a username
-    return text or None
-
-
 # ── Request / response schemas ────────────────────────────────────────────────
 
 class SyncHandlesRequest(BaseModel):
-    leetcode_handle:   Optional[str] = Field(default=None, max_length=80)
-    codeforces_handle: Optional[str] = Field(default=None, max_length=80)
-    codechef_handle:   Optional[str] = Field(default=None, max_length=80)
+    leetcode_handle:   Optional[str] = Field(default=None, max_length=200)
+    codeforces_handle: Optional[str] = Field(default=None, max_length=200)
+    codechef_handle:   Optional[str] = Field(default=None, max_length=200)
 
 
 # ── Helper ─────────────────────────────────────────────────────────────────────
@@ -140,6 +95,21 @@ def _cp_profile_to_dict(cp: CPProfile) -> Dict[str, Any]:
     }
 
 
+def _normalize_submitted_handle(platform: str, value: str | None) -> str | None:
+    if value is None:
+        return None
+    if not value.strip():
+        return None
+    normalized = normalize_platform_handle(platform, value)
+    if normalized is None:
+        label = {"leetcode": "LeetCode", "codeforces": "Codeforces", "codechef": "CodeChef"}.get(platform, platform)
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Invalid {label} handle or profile URL.",
+        )
+    return normalized
+
+
 # ── Routes ─────────────────────────────────────────────────────────────────────
 
 @router.post(
@@ -169,11 +139,11 @@ async def sync_handles(
 
     # Persist handles (sanitise URLs → raw usernames)
     if payload.leetcode_handle is not None:
-        cp.leetcode_handle   = _extract_username(payload.leetcode_handle)
+        cp.leetcode_handle = _normalize_submitted_handle("leetcode", payload.leetcode_handle)
     if payload.codeforces_handle is not None:
-        cp.codeforces_handle = _extract_username(payload.codeforces_handle)
+        cp.codeforces_handle = _normalize_submitted_handle("codeforces", payload.codeforces_handle)
     if payload.codechef_handle is not None:
-        cp.codechef_handle   = _extract_username(payload.codechef_handle)
+        cp.codechef_handle = _normalize_submitted_handle("codechef", payload.codechef_handle)
 
     db.commit()
     db.refresh(cp)

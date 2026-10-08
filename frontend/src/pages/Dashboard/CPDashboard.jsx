@@ -8,6 +8,7 @@ export default function CPDashboard() {
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
   const [syncing, setSyncing] = useState(false);
+  const [syncError, setSyncError] = useState('');
   const [handles, setHandles] = useState({ leetcode_handle: '', codeforces_handle: '', codechef_handle: '' });
 
   const loadStats = async () => {
@@ -31,11 +32,13 @@ export default function CPDashboard() {
   const handleSync = async (e) => {
     e.preventDefault();
     setSyncing(true);
+    setSyncError('');
     try {
       const res = await cpAPI.syncHandles(handles);
       setData(res.data);
     } catch (err) {
-      alert("Sync failed. Check handles.");
+      const detail = err.response?.data?.detail;
+      setSyncError(typeof detail === 'string' ? detail : 'Unable to fetch profile data.');
     } finally {
       setSyncing(false);
     }
@@ -75,6 +78,12 @@ export default function CPDashboard() {
         </form>
       </div>
 
+      {syncError && (
+        <div className="border border-red-500/20 bg-red-500/10 text-red-300 rounded-xl px-4 py-3 text-sm">
+          {syncError}
+        </div>
+      )}
+
       {data && (
         <>
           <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
@@ -92,6 +101,11 @@ export default function CPDashboard() {
                     <p className="text-xl font-bold text-emerald-400">{data[plat].total_solved || 0}</p>
                   </div>
                 </div>
+                {data[plat].error && (
+                  <p className="mt-4 text-xs text-red-300 bg-red-500/10 border border-red-500/20 rounded-lg px-3 py-2">
+                    {data[plat].error}
+                  </p>
+                )}
               </motion.div>
             ))}
           </div>

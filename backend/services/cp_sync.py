@@ -29,6 +29,7 @@ import re
 from dataclasses import dataclass, field, asdict
 from datetime import date, datetime, timezone
 from typing import Any, Dict, List, Optional
+from urllib.parse import unquote, urlparse
 
 import httpx
 from bs4 import BeautifulSoup
@@ -49,6 +50,38 @@ _HEADERS   = {
     ),
     "Accept-Language": "en-US,en;q=0.9",
 }
+
+_PLAIN_HANDLE_RE = re.compile(r"^[A-Za-z0-9_.-]+$")
+
+
+def _normalize_platform_handle(platform: str, handle: str) -> str:
+    text = (handle or "").strip()
+    if not text:
+        return ""
+
+    config = {
+        "leetcode": ({"leetcode.com", "www.leetcode.com"}, {"u", "users"}),
+        "codeforces": ({"codeforces.com", "www.codeforces.com"}, {"profile"}),
+        "codechef": ({"codechef.com", "www.codechef.com"}, {"users"}),
+    }.get(platform)
+    if not config:
+        return text
+
+    parsed = urlparse(text)
+    if parsed.scheme or parsed.netloc:
+        hosts, prefixes = config
+        parts = [unquote(part) for part in parsed.path.split("/") if part]
+        if (
+            parsed.scheme in {"http", "https"}
+            and parsed.netloc.lower() in hosts
+            and len(parts) == 2
+            and parts[0].lower() in prefixes
+            and _PLAIN_HANDLE_RE.fullmatch(parts[1])
+        ):
+            return parts[1]
+        return ""
+
+    return unquote(text) if _PLAIN_HANDLE_RE.fullmatch(text) else ""
 
 
 # ── Data models ───────────────────────────────────────────────────────────────
@@ -115,6 +148,7 @@ async def fetch_codeforces(handle: str) -> PlatformStats:
     Codeforces official REST API.
     Docs: https://codeforces.com/apiHelp/methods#user.info
     """
+    handle = _normalize_platform_handle("codeforces", handle)
     base = PlatformStats(platform="codeforces", handle=handle)
     if not handle:
         base.error = "no handle provided"
@@ -169,7 +203,7 @@ async def fetch_codeforces(handle: str) -> PlatformStats:
 
 _LEETCODE_QUERY = """
 query getUserProfile($username: String!) {
-  matchedUser(username: $username) {
+    matchedUser(username: $username) {
     username
     submitStatsGlobal {
       acSubmissionNum {
@@ -177,15 +211,15 @@ query getUserProfile($username: String!) {
         count
       }
     }
-    userContestRanking {
-      rating
-      globalRanking
-      attendedContestsCount
-    }
     profile {
       ranking
       starRating
     }
+  }
+  userContestRanking(username: $username) {
+    rating
+    globalRanking
+    attendedContestsCount
   }
 }
 """
@@ -194,6 +228,7 @@ async def fetch_leetcode(handle: str) -> PlatformStats:
     """
     LeetCode GraphQL endpoint.
     """
+    handle = _normalize_platform_handle("leetcode", handle)
     base = PlatformStats(platform="leetcode", handle=handle)
     if not handle:
         base.error = "no handle provided"
@@ -214,10 +249,28 @@ async def fetch_leetcode(handle: str) -> PlatformStats:
     try:
         async with httpx.AsyncClient(timeout=_TIMEOUT, headers=headers, follow_redirects=True) as client:
             resp = await client.post("https://leetcode.com/graphql", json=payload)
-            resp.raise_for_status()
             data = resp.json()
 
-        user = (data.get("data") or {}).get("matchedUser")
+            errors = data.get("errors") if isinstance(data, dict) else None
+            if errors:
+                message = "; ".join(
+                    str(error.get("message", "GraphQL error"))
+                    for error in errors
+                    if isinstance(error, dict)
+                ) or "GraphQL error"
+                base.error = f"LeetCode API error: {message}"
+                logger.error("[CP] LeetCode GraphQL error for %s: %s", handle, message)
+                return base
+
+            resp.raise_for_status()
+
+        response_data = data.get("data") if isinstance(data, dict) else None
+        if response_data is None:
+            base.error = "LeetCode returned no profile data"
+            logger.error("[CP] LeetCode missing data for %s", handle)
+            return base
+
+        user = response_data.get("matchedUser")
         if user is None:
             base.error = f"LeetCode user '{handle}' not found"
             logger.warning("[CP] LeetCode: %s", base.error)
@@ -238,7 +291,7 @@ async def fetch_leetcode(handle: str) -> PlatformStats:
                 base.hard_count = count
 
         # Contest rating
-        contest = user.get("userContestRanking") or {}
+        contest = response_data.get("userContestRanking") or {}
         raw_rating = contest.get("rating", 0) or 0
         base.rating     = int(raw_rating)
         base.max_rating = base.rating   # LeetCode doesn't expose max separately
@@ -264,6 +317,7 @@ async def fetch_codechef(handle: str) -> PlatformStats:
     CodeChef public profile scraper.
     Extracts: star rating, current rating, max rating, problems solved.
     """
+    handle = _normalize_platform_handle("codechef", handle)
     base = PlatformStats(platform="codechef", handle=handle)
     if not handle:
         base.error = "no handle provided"
