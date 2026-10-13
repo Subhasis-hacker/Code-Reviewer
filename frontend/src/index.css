@@ -1,14 +1,14 @@
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
+@import '@xyflow/react/dist/style.css';
+@import "tailwindcss";
 
-html, body {
-  background-color: #09090b; /* zinc-950 */
-  color: #f4f4f5; /* zinc-100 */
-}
-
-/* Cyberpunk Scrollbar */
-::-webkit-scrollbar { width: 8px; height: 8px; }
-::-webkit-scrollbar-track { background: #09090b; }
-::-webkit-scrollbar-thumb { background: #27272a; border-radius: 4px; }
-::-webkit-scrollbar-thumb:hover { background: #10b981; }
+html, body, #root { min-height: 100%; }
+body { @apply bg-slate-950 text-slate-200 font-sans antialiased; }
+.input { @apply w-full rounded-lg border border-slate-800 bg-slate-900/70 px-3 py-2.5 text-sm text-slate-100 placeholder-slate-600 outline-none transition focus:border-indigo-500 focus:ring-2 focus:ring-indigo-500/30; }
+.btn { @apply inline-flex items-center justify-center gap-2 rounded-lg bg-indigo-500 px-4 py-2.5 text-sm font-medium text-white transition hover:bg-indigo-400 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-300 disabled:opacity-50; }
+.btn-ghost { @apply inline-flex items-center justify-center gap-2 rounded-lg border border-slate-800 px-4 py-2.5 text-sm text-slate-300 transition hover:border-slate-600 hover:text-white; }
+.panel { @apply rounded-2xl border border-slate-800 bg-slate-900/50 p-5; }
+.react-flow__attribution { display: none; }
+@media (prefers-reduced-motion: reduce) { * { animation-duration: .01ms !important; transition-duration: .01ms !important; } }
