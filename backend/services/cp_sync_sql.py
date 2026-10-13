@@ -12,12 +12,18 @@ Fetchers (async httpx)
   fetch_codeforces(handle)  → Official Codeforces REST API
   fetch_codechef(handle)    → httpx + BeautifulSoup4 scraper
 
+Submission Fetchers
+-------------------
+  fetch_leetcode_submissions(handle)    → GraphQL (recent AC submissions + topics)
+  fetch_codeforces_submissions(handle)  → user.status API
+
 Orchestrator
 ------------
   sync_all_profiles(email, db)
     → reads handles from CPProfile
     → runs all fetchers in parallel
     → updates CPProfile row in PostgreSQL
+    → persists submissions + snapshots
     → returns normalised dict for the API response
 """
 
@@ -27,13 +33,13 @@ import logging
 import re
 from datetime import datetime, timezone
 from json import JSONDecodeError
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 from urllib.parse import unquote, urlparse
 import httpx
 from bs4 import BeautifulSoup
 from sqlalchemy.orm import Session
 
-from backend.core.models import CPProfile
+from backend.core.models import CPProfile, CPProfileSnapshot, CPSubmission
 
 logger = logging.getLogger(__name__)
 
@@ -136,16 +142,96 @@ def _empty_stats(platform: str, handle: str, error: str = "") -> Dict[str, Any]:
     return {
         "platform":     platform,
         "handle":       handle,
-        "rating":       0,
-        "max_rating":   0,
+        "rating":       None,
+        "max_rating":   None,
         "rank":         "",
         "stars":        "",
-        "easy_solved":  0,
-        "medium_solved": 0,
-        "hard_solved":  0,
-        "total_solved": 0,
+        "easy_solved":  None,
+        "medium_solved": None,
+        "hard_solved":  None,
+        "total_solved": None,
         "error":        error,
     }
+
+
+# ── Topic normalization ───────────────────────────────────────────────────────
+
+# Map common topic tag variations to canonical names
+_TOPIC_ALIASES = {
+    "array": "Arrays",
+    "arrays": "Arrays",
+    "string": "Strings",
+    "strings": "Strings",
+    "dynamic programming": "Dynamic Programming",
+    "dp": "Dynamic Programming",
+    "graph": "Graphs",
+    "graphs": "Graphs",
+    "tree": "Trees",
+    "trees": "Trees",
+    "greedy": "Greedy",
+    "binary search": "Binary Search",
+    "binarysearch": "Binary Search",
+    "backtracking": "Backtracking",
+    "two pointers": "Two Pointers",
+    "twopointers": "Two Pointers",
+    "sliding window": "Sliding Window",
+    "slidingwindow": "Sliding Window",
+    "heap": "Heap / Priority Queue",
+    "priority queue": "Heap / Priority Queue",
+    "heap (priority queue)": "Heap / Priority Queue",
+    "math": "Math",
+    "number theory": "Math",
+    "bit manipulation": "Bit Manipulation",
+    "bitmasks": "Bit Manipulation",
+    "bitmask": "Bit Manipulation",
+    "linked list": "Linked List",
+    "stack": "Stack / Queue",
+    "queue": "Stack / Queue",
+    "monotonic stack": "Stack / Queue",
+    "hash table": "Hash Table",
+    "hash map": "Hash Table",
+    "hashing": "Hash Table",
+    "sorting": "Sorting",
+    "sort": "Sorting",
+    "sortings": "Sorting",
+    "depth-first search": "DFS / BFS",
+    "dfs": "DFS / BFS",
+    "breadth-first search": "DFS / BFS",
+    "bfs": "DFS / BFS",
+    "dfs and similar": "DFS / BFS",
+    "union find": "Union Find",
+    "disjoint set union": "Union Find",
+    "dsu": "Union Find",
+    "divide and conquer": "Divide and Conquer",
+    "recursion": "Recursion",
+    "simulation": "Simulation",
+    "implementation": "Implementation",
+    "brute force": "Brute Force",
+    "constructive algorithms": "Constructive",
+    "combinatorics": "Combinatorics",
+    "geometry": "Geometry",
+    "interactive": "Interactive",
+    "prefix sum": "Prefix Sum",
+    "matrix": "Matrix",
+    "trie": "Trie",
+    "segment tree": "Segment Tree",
+    "binary indexed tree": "Binary Indexed Tree",
+    "design": "Design",
+    "database": "Database",
+    "shortest paths": "Shortest Paths",
+    "games": "Game Theory",
+    "game theory": "Game Theory",
+    "probabilities": "Probability",
+    "flows": "Network Flow",
+    "strings suffix structures": "String Algorithms",
+    "string matching": "String Algorithms",
+}
+
+
+def normalize_topic(raw_tag: str) -> str:
+    """Normalize a topic tag to a canonical display name."""
+    clean = raw_tag.strip().lower()
+    return _TOPIC_ALIASES.get(clean, raw_tag.strip().title())
 
 
 # ── LeetCode fetcher ──────────────────────────────────────────────────────────
@@ -292,6 +378,163 @@ async def fetch_leetcode(handle: str) -> Dict[str, Any]:
         return _empty_stats("leetcode", handle, "Unable to parse LeetCode profile")
 
 
+# ── LeetCode submission/topic fetcher ─────────────────────────────────────────
+
+_LC_SUBMISSIONS_QUERY = """
+query recentAcSubmissions($username: String!, $limit: Int!) {
+  recentAcSubmissionList(username: $username, limit: $limit) {
+    id
+    title
+    titleSlug
+    timestamp
+  }
+}
+"""
+
+_LC_PROBLEM_TAGS_QUERY = """
+query problemTags($titleSlug: String!) {
+  question(titleSlug: $titleSlug) {
+    titleSlug
+    difficulty
+    topicTags {
+      name
+      slug
+    }
+  }
+}
+"""
+
+
+async def fetch_leetcode_submissions(handle: str, limit: int = 200) -> List[Dict[str, Any]]:
+    """Fetch recent accepted LeetCode submissions with topic tags.
+
+    Uses the recentAcSubmissionList GraphQL query to get accepted submissions,
+    then fetches topic tags for each unique problem via a batched approach.
+
+    NOTE: LeetCode does not expose all-time submission history easily.
+    This fetches only recent accepted submissions (up to `limit`).
+    """
+    handle = normalize_platform_handle("leetcode", handle)
+    if not handle:
+        return []
+
+    headers = {
+        **_HEADERS,
+        "Content-Type": "application/json",
+        "Referer": "https://leetcode.com",
+        "Origin": "https://leetcode.com",
+    }
+
+    try:
+        async with httpx.AsyncClient(
+            timeout=httpx.Timeout(30.0), headers=headers, follow_redirects=True
+        ) as client:
+            # Step 1: Get recent accepted submissions
+            resp = await client.post(
+                "https://leetcode.com/graphql",
+                json={
+                    "query": _LC_SUBMISSIONS_QUERY,
+                    "variables": {"username": handle, "limit": limit},
+                },
+            )
+            try:
+                data = resp.json()
+            except JSONDecodeError:
+                logger.warning("[LC-sub] %s: non-JSON response", handle)
+                return []
+
+            submissions_raw = (data.get("data") or {}).get("recentAcSubmissionList") or []
+            if not isinstance(submissions_raw, list):
+                return []
+
+            # Deduplicate by titleSlug to get unique problems
+            seen_slugs = {}
+            for sub in submissions_raw:
+                if not isinstance(sub, dict):
+                    continue
+                slug = sub.get("titleSlug")
+                if not slug or slug in seen_slugs:
+                    continue
+                seen_slugs[slug] = sub
+
+            # Step 2: Fetch topic tags for unique problems (batch with rate limit awareness)
+            problem_tags = {}
+            slugs_to_fetch = list(seen_slugs.keys())
+
+            # Fetch in small batches to avoid rate limiting
+            batch_size = 10
+            for i in range(0, min(len(slugs_to_fetch), 100), batch_size):
+                batch = slugs_to_fetch[i:i + batch_size]
+                tasks = []
+                for slug in batch:
+                    tasks.append(
+                        client.post(
+                            "https://leetcode.com/graphql",
+                            json={
+                                "query": _LC_PROBLEM_TAGS_QUERY,
+                                "variables": {"titleSlug": slug},
+                            },
+                        )
+                    )
+                try:
+                    responses = await asyncio.gather(*tasks, return_exceptions=True)
+                    for slug, tag_resp in zip(batch, responses):
+                        if isinstance(tag_resp, Exception):
+                            continue
+                        try:
+                            tag_data = tag_resp.json()
+                        except (JSONDecodeError, Exception):
+                            continue
+                        question = (tag_data.get("data") or {}).get("question") or {}
+                        tags = question.get("topicTags") or []
+                        difficulty = question.get("difficulty")
+                        problem_tags[slug] = {
+                            "tags": [t.get("name", "") for t in tags if isinstance(t, dict) and t.get("name")],
+                            "difficulty": difficulty,
+                        }
+                except Exception as exc:
+                    logger.warning("[LC-sub] batch tag fetch failed: %s", exc)
+
+                # Small delay between batches to respect rate limits
+                if i + batch_size < len(slugs_to_fetch):
+                    await asyncio.sleep(0.5)
+
+        # Build submission rows
+        rows = []
+        for slug, sub in seen_slugs.items():
+            submitted_at = None
+            ts = sub.get("timestamp")
+            if ts:
+                try:
+                    submitted_at = datetime.fromtimestamp(int(ts), tz=timezone.utc)
+                except (ValueError, TypeError, OSError):
+                    pass
+
+            tags_info = problem_tags.get(slug, {})
+            tags = tags_info.get("tags", [])
+            difficulty = tags_info.get("difficulty")
+
+            rows.append({
+                "platform": "leetcode",
+                "handle": handle,
+                "submission_id": f"ac_{sub.get('id', slug)}",
+                "problem_id": slug,
+                "problem_name": sub.get("title"),
+                "verdict": "Accepted",
+                "is_accepted": True,
+                "submitted_at": submitted_at,
+                "difficulty": difficulty,
+                "topics": tags,
+            })
+
+        logger.info("[LC-sub] %s → %d unique accepted problems fetched", handle, len(rows))
+        return rows
+
+    except Exception as exc:
+        logger.warning("[LC-sub] submission fetch failed for %s: %s", handle, exc)
+        return []
+
+
 # ── Codeforces fetcher ────────────────────────────────────────────────────────
 
 async def fetch_codeforces(handle: str) -> Dict[str, Any]:
@@ -316,18 +559,6 @@ async def fetch_codeforces(handle: str) -> Dict[str, Any]:
         max_rating = info.get("maxRating", 0) or 0
         rank       = info.get("rank",      "")
 
-        # Approximate difficulty split from rating tier
-        if rating >= 2400:
-            easy, medium, hard = 0,   50, 450
-        elif rating >= 1900:
-            easy, medium, hard = 0,  150, 200
-        elif rating >= 1600:
-            easy, medium, hard = 50, 200,  50
-        elif rating >= 1200:
-            easy, medium, hard = 150, 100, 10
-        else:
-            easy, medium, hard = 100, 30,   0
-
         logger.info("[CF] %s → rating=%d max=%d", handle, rating, max_rating)
         return {
             "platform":      "codeforces",
@@ -335,10 +566,10 @@ async def fetch_codeforces(handle: str) -> Dict[str, Any]:
             "rating":        rating,
             "max_rating":    max_rating,
             "rank":          rank,
-            "easy_solved":   easy,
-            "medium_solved": medium,
-            "hard_solved":   hard,
-            "total_solved":  easy + medium + hard,
+            "easy_solved":   None,
+            "medium_solved": None,
+            "hard_solved":   None,
+            "total_solved":  None,
             "error":         None,
         }
 
@@ -482,14 +713,6 @@ async def fetch_codechef(handle: str) -> Dict[str, Any]:
             if solved_section is None:
                 errors.append("solved count unavailable")
 
-        # Approximate difficulty split (CodeChef doesn't tag by difficulty)
-        if total_solved > 0:
-            easy   = int(total_solved * 0.55)
-            medium = int(total_solved * 0.35)
-            hard   = total_solved - easy - medium
-        else:
-            easy = medium = hard = 0
-
         logger.info(
             "[CC] %s → rating=%d max=%d stars=%r solved=%d",
             handle, current_rating, max_rating, stars, total_solved,
@@ -501,9 +724,9 @@ async def fetch_codechef(handle: str) -> Dict[str, Any]:
             "max_rating":    max_rating,
             "rank":          stars,
             "stars":         stars,
-            "easy_solved":   easy,
-            "medium_solved": medium,
-            "hard_solved":   hard,
+            "easy_solved":   None,
+            "medium_solved": None,
+            "hard_solved":   None,
             "total_solved":  total_solved,
             "error":         "; ".join(errors) if errors else None,
         }
@@ -517,6 +740,104 @@ async def fetch_codechef(handle: str) -> Dict[str, Any]:
         return _empty_stats("codechef", handle, str(exc))
 
 
+# ── Codeforces submissions fetcher ───────────────────────────────────────────
+
+async def fetch_codeforces_submissions(handle: str, limit: int = 1000) -> List[Dict[str, Any]]:
+    handle = normalize_platform_handle("codeforces", handle)
+    if not handle:
+        return []
+
+    url = f"https://codeforces.com/api/user.status?handle={handle}&from=1&count={limit}"
+    try:
+        async with httpx.AsyncClient(timeout=_TIMEOUT, headers=_HEADERS, follow_redirects=True) as client:
+            resp = await client.get(url)
+            resp.raise_for_status()
+            data = resp.json()
+        if data.get("status") != "OK":
+            logger.warning("[CF] submission history unavailable for %s: %s", handle, data.get("comment"))
+            return []
+
+        rows = []
+        for item in data.get("result", []):
+            problem = item.get("problem") or {}
+            contest_id = problem.get("contestId")
+            index = problem.get("index")
+            if contest_id is None or index is None:
+                problem_id = f"{problem.get('name') or 'unknown'}"
+            else:
+                problem_id = f"{contest_id}{index}"
+            tags = problem.get("tags") if isinstance(problem.get("tags"), list) else []
+            submitted_at = None
+            if item.get("creationTimeSeconds"):
+                submitted_at = datetime.fromtimestamp(int(item["creationTimeSeconds"]), tz=timezone.utc)
+            rows.append({
+                "platform": "codeforces",
+                "handle": handle,
+                "submission_id": str(item.get("id")),
+                "problem_id": problem_id,
+                "problem_name": problem.get("name"),
+                "verdict": item.get("verdict"),
+                "is_accepted": item.get("verdict") == "OK",
+                "submitted_at": submitted_at,
+                "difficulty": None,
+                "topics": tags,
+            })
+        return rows
+    except Exception as exc:
+        logger.warning("[CF] submission history fetch failed for %s: %s", handle, exc)
+        return []
+
+
+# ── Persistence helpers ──────────────────────────────────────────────────────
+
+def _persist_submissions(db: Session, email: str, submissions: List[Dict[str, Any]]) -> None:
+    for row in submissions:
+        if not row.get("submission_id") or not row.get("problem_id"):
+            continue
+        existing = (
+            db.query(CPSubmission)
+            .filter(
+                CPSubmission.user_email == email,
+                CPSubmission.platform == row["platform"],
+                CPSubmission.submission_id == row["submission_id"],
+            )
+            .first()
+        )
+        topics_csv = ",".join(str(tag) for tag in row.get("topics", []) if tag)
+        if existing:
+            existing.verdict = row.get("verdict")
+            existing.is_accepted = bool(row.get("is_accepted"))
+            existing.topics_csv = topics_csv
+            if row.get("difficulty"):
+                existing.difficulty = row["difficulty"]
+            continue
+        db.add(CPSubmission(
+            user_email=email,
+            platform=row["platform"],
+            handle=row["handle"],
+            submission_id=row["submission_id"],
+            problem_id=row["problem_id"],
+            problem_name=row.get("problem_name"),
+            verdict=row.get("verdict"),
+            is_accepted=bool(row.get("is_accepted")),
+            submitted_at=row.get("submitted_at"),
+            difficulty=row.get("difficulty"),
+            topics_csv=topics_csv,
+        ))
+
+
+def _snapshot(db: Session, email: str, platform: str, now: datetime, total: Optional[int], rating: Optional[int], max_rating: Optional[int]) -> None:
+    snap = CPProfileSnapshot(
+        user_email=email,
+        platform=platform,
+        snapshot_date=now,
+        total_solved=total,
+        rating=rating,
+        max_rating=max_rating,
+    )
+    db.add(snap)
+
+
 # ── Orchestrator ──────────────────────────────────────────────────────────────
 
 async def sync_all_profiles(
@@ -525,9 +846,10 @@ async def sync_all_profiles(
 ) -> Dict[str, Any]:
     """
     1. Read handles from CPProfile row for *email*.
-    2. Run all three fetchers in parallel.
+    2. Run all fetchers in parallel (profile + submissions).
     3. Update CPProfile columns in PostgreSQL.
-    4. Return a normalised dict for the API response.
+    4. Persist submissions and snapshots.
+    5. Return a normalised dict for the API response.
     """
     cp: Optional[CPProfile] = (
         db.query(CPProfile).filter(CPProfile.user_email == email).first()
@@ -547,25 +869,40 @@ async def sync_all_profiles(
         email, lc_handle, cf_handle, cc_handle,
     )
 
-    # Parallel fetch
-    lc, cf, cc = await asyncio.gather(
+    # Parallel fetch — fixed: properly destructure all 4 results
+    lc, cf, cc, cf_submissions = await asyncio.gather(
         fetch_leetcode(lc_handle),
         fetch_codeforces(cf_handle),
         fetch_codechef(cc_handle),
+        fetch_codeforces_submissions(cf_handle),
     )
+
+    # Also fetch LeetCode submissions (not in original parallel to avoid LC rate limiting)
+    lc_submissions = []
+    if lc_handle and not lc.get("error"):
+        try:
+            lc_submissions = await fetch_leetcode_submissions(lc_handle)
+        except Exception as exc:
+            logger.warning("[CP] LeetCode submission fetch failed for %s: %s", lc_handle, exc)
 
     # Persist into CPProfile
     now = datetime.now(timezone.utc)
 
-    cp.lc_rating        = lc["rating"]
-    cp.lc_easy_solved   = lc["easy_solved"]
-    cp.lc_medium_solved = lc["medium_solved"]
-    cp.lc_hard_solved   = lc["hard_solved"]
-    cp.lc_rank          = lc["rank"]
+    if lc.get("error"):
+        logger.warning("[CP] Skipping LeetCode stats persistence for %s: %s", lc_handle, lc["error"])
+    else:
+        cp.lc_rating        = lc["rating"] or 0
+        cp.lc_easy_solved   = lc["easy_solved"] or 0
+        cp.lc_medium_solved = lc["medium_solved"] or 0
+        cp.lc_hard_solved   = lc["hard_solved"] or 0
+        cp.lc_rank          = lc["rank"]
 
-    cp.cf_rating     = cf["rating"]
-    cp.cf_max_rating = cf["max_rating"]
-    cp.cf_rank       = cf["rank"]
+    if cf.get("error"):
+        logger.warning("[CP] Skipping Codeforces stats persistence for %s: %s", cf_handle, cf["error"])
+    else:
+        cp.cf_rating     = cf["rating"] or 0
+        cp.cf_max_rating = cf["max_rating"] or 0
+        cp.cf_rank       = cf["rank"]
 
     if cc.get("error"):
         logger.warning("[CP] Skipping CodeChef stats persistence for %s: %s", cc_handle, cc["error"])
@@ -576,15 +913,30 @@ async def sync_all_profiles(
         cp.cc_total_solved = cc["total_solved"]
 
     cp.last_synced_at = now
+
+    # Persist submissions
+    _persist_submissions(db, email, cf_submissions)
+    _persist_submissions(db, email, lc_submissions)
+
+    # Create snapshots
+    if not lc.get("error"):
+        _snapshot(db, email, "leetcode", now, lc.get("total_solved"), lc.get("rating"), lc.get("max_rating"))
+    if not cf.get("error"):
+        accepted_cf = len({row["problem_id"] for row in cf_submissions if row.get("is_accepted")})
+        cf["total_solved"] = accepted_cf
+        _snapshot(db, email, "codeforces", now, accepted_cf, cf.get("rating"), cf.get("max_rating"))
+    if not cc.get("error"):
+        _snapshot(db, email, "codechef", now, cc.get("total_solved"), cc.get("rating"), cc.get("max_rating"))
+
     db.commit()
     db.refresh(cp)
 
     logger.info("[CP] Sync complete for %s", email)
 
-    # Build response
-    total_easy   = lc["easy_solved"]   + cf["easy_solved"]   + cc["easy_solved"]
-    total_medium = lc["medium_solved"] + cf["medium_solved"] + cc["medium_solved"]
-    total_hard   = lc["hard_solved"]   + cf["hard_solved"]   + cc["hard_solved"]
+    # Build response — only include real, verified difficulty data
+    total_easy = lc.get("easy_solved") or 0
+    total_medium = lc.get("medium_solved") or 0
+    total_hard = lc.get("hard_solved") or 0
 
     return {
         "synced_at":  now.isoformat(),

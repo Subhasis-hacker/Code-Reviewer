@@ -4,6 +4,11 @@ const apiClient = axios.create({
   baseURL: 'https://code-reviewer-backend-yxx4.onrender.com/api/v1',
 });
 
+// const apiClient = axios.create({
+//   baseURL: 'http://127.0.0.1:8000/api/v1',
+// });
+
+
 // Automatically attach JWT token to protected requests
 apiClient.interceptors.request.use(
   (config) => {

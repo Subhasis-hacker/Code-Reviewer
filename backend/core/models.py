@@ -21,9 +21,12 @@ from sqlalchemy import (
     DateTime,
     Float,
     ForeignKey,
+    Boolean,
     Integer,
+    Index,
     String,
     Text,
+    UniqueConstraint,
     func,
 )
 from sqlalchemy.dialects.postgresql import UUID
@@ -124,3 +127,44 @@ class CPProfile(Base):
 
     def __repr__(self) -> str:  # pragma: no cover
         return f"<CPProfile user_email={self.user_email!r}>"
+
+
+class CPSubmission(Base):
+    __tablename__ = "cp_submissions"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    user_email = Column(String(255), ForeignKey("users.email", ondelete="CASCADE"), nullable=False, index=True)
+    platform = Column(String(32), nullable=False)
+    handle = Column(String(100), nullable=False)
+    submission_id = Column(String(160), nullable=False)
+    problem_id = Column(String(260), nullable=False)
+    problem_name = Column(String(500), nullable=True)
+    verdict = Column(String(80), nullable=True)
+    is_accepted = Column(Boolean, default=False, nullable=False)
+    submitted_at = Column(DateTime(timezone=True), nullable=True, index=True)
+    difficulty = Column(String(32), nullable=True)
+    topics_csv = Column(Text, nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
+
+    __table_args__ = (
+        UniqueConstraint("user_email", "platform", "submission_id", name="uq_cp_submission_user_platform_submission"),
+        Index("ix_cp_submission_user_platform_problem", "user_email", "platform", "problem_id"),
+    )
+
+
+class CPProfileSnapshot(Base):
+    __tablename__ = "cp_profile_snapshots"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    user_email = Column(String(255), ForeignKey("users.email", ondelete="CASCADE"), nullable=False, index=True)
+    platform = Column(String(32), nullable=False)
+    snapshot_date = Column(DateTime(timezone=True), nullable=False, index=True)
+    total_solved = Column(Integer, nullable=True)
+    rating = Column(Integer, nullable=True)
+    max_rating = Column(Integer, nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+    __table_args__ = (
+        UniqueConstraint("user_email", "platform", "snapshot_date", name="uq_cp_snapshot_user_platform_date"),
+    )
